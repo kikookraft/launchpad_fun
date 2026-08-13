@@ -45,7 +45,8 @@ def clear_memory_chunk(lp: LaunchpadMK2,
 
 
 def check_input(correct_pads: list[tuple[int, int]], lp: LaunchpadMK2,
-                lives: int = 3) -> bool:
+                lives: int = 3,
+                additional_pad: tuple[int, int] = None) -> bool:
     """
     Check if the user pressed the correct pads
     Returns True if all correct pads were pressed, False otherwise
@@ -57,9 +58,38 @@ def check_input(correct_pads: list[tuple[int, int]], lp: LaunchpadMK2,
     If all correct pads were pressed, blink all the correct pads in green for
     1 second, then clear all pads and return True
     """
-    pressed_pads: list[tuple[int, int]] = []
-    lp.clear_events()
+    pressed_pads: list[tuple[int, int]] = [additional_pad] if additional_pad else []
+    lp.update()  # fetch all pending events
+    # lp.clear_events()
     show_lives(lp, lives)
+    # check pre pressed pad
+    if additional_pad:
+        x, y = additional_pad
+        if (x, y) in correct_pads:
+            lp.set_xy(x, y, 255, 255, 255)
+        else:
+            missing_pad = [pad for pad in correct_pads if pad not in pressed_pads]
+            lp.set_xy(x, y, 255, 0, 0)
+            display_memory_chunk(lp, missing_pad, color=(0, 255, 0), lives=lives)
+            time.sleep(.2)
+            clear_memory_chunk(lp, missing_pad)
+            time.sleep(.2)
+            display_memory_chunk(lp, missing_pad, color=(0, 255, 0), lives=lives)
+            time.sleep(.2)
+            clear_memory_chunk(lp, missing_pad)
+            time.sleep(.2)
+            display_memory_chunk(lp, missing_pad, color=(0, 255, 0), lives=lives)
+            time.sleep(.2)
+            clear_memory_chunk(lp, missing_pad)
+            time.sleep(.2)
+            display_memory_chunk(lp, missing_pad, color=(0, 255, 0), lives=lives)
+            time.sleep(.2)
+            clear_memory_chunk(lp, missing_pad)
+            clear_memory_chunk(lp, pressed_pads)
+            time.sleep(.2)
+            lp.set_xy(x, y, 0, 0, 0)
+            lp.clear_events()
+            return False
     while len(pressed_pads) < len(correct_pads):
         lp.update()  # fetch all pending events
         event = lp.get_pressed()
@@ -72,15 +102,32 @@ def check_input(correct_pads: list[tuple[int, int]], lp: LaunchpadMK2,
         if (x, y) in correct_pads:
             lp.set_xy(x, y, 255, 255, 255)
         else:
+            missing_pad = [pad for pad in correct_pads if pad not in pressed_pads]
             lp.set_xy(x, y, 255, 0, 0)
-            display_memory_chunk(lp, correct_pads, color=(0, 255, 0), lives=lives)
-            time.sleep(1)
-            lp.clear()
+            display_memory_chunk(lp, missing_pad, color=(0, 255, 0), lives=lives)
+            time.sleep(.2)
+            clear_memory_chunk(lp, missing_pad)
+            time.sleep(.2)
+            display_memory_chunk(lp, missing_pad, color=(0, 255, 0), lives=lives)
+            time.sleep(.2)
+            clear_memory_chunk(lp, missing_pad)
+            time.sleep(.2)
+            display_memory_chunk(lp, missing_pad, color=(0, 255, 0), lives=lives)
+            time.sleep(.2)
+            clear_memory_chunk(lp, missing_pad)
+            time.sleep(.2)
+            display_memory_chunk(lp, missing_pad, color=(0, 255, 0), lives=lives)
+            time.sleep(.2)
+            clear_memory_chunk(lp, missing_pad)
+            clear_memory_chunk(lp, pressed_pads)
+            time.sleep(.2)
+            lp.set_xy(x, y, 0, 0, 0)
+            lp.clear_events()
             return False
 
     display_memory_chunk(lp, correct_pads, color=(0, 255, 0), lives=lives)
     time.sleep(.5)
-    lp.clear()
+    clear_memory_chunk(lp, correct_pads)
     show_lives(lp, lives)
     return True
 
@@ -96,8 +143,36 @@ def show_lives(lp: LaunchpadMK2, lives: int):
         lp.set_xy(i, 0, 255, 0, 0)
 
 
-def main():
-    lp = LaunchpadMK2()
+def wait_user(lp: LaunchpadMK2, timeout: float = 0):
+    """
+    Wait for the user to press any pad and return the coordinates of the pad pressed
+    """
+    lp.update()  # fetch all pending events
+    lp.clear_events()
+    if not timeout:
+        lp.clear()
+    last_update = time.time()
+    status = False
+    while True:
+        lp.update()  # fetch all pending events
+        event = lp.get_pressed()
+        if time.time() - last_update > 0.1 and not timeout:
+            status = not status
+            last_update = time.time()
+            if status:
+                lp.set_xy(8, 8, 0, 0, 255)
+            else:
+                lp.set_xy(8, 8, 0, 0, 0)
+        if event is not None or (timeout and time.time() - last_update > timeout):
+            break
+    if not timeout:
+        for x in range(8):
+            lp.set_xy(x, 0, 0, 255, 0)
+            time.sleep(.05)
+    return event
+
+
+def game_loop(lp: LaunchpadMK2):
     lp.clear()
     level = 1
     lives = 8
@@ -105,16 +180,30 @@ def main():
     while True:
         pads = generate_memory_chunk(level)
         display_memory_chunk(lp, pads, lives=lives)
-        time.sleep(.5 + (level * 0.1))
-        lp.clear()
-        if check_input(pads, lp, lives=lives):
+        pressed_pad = wait_user(lp, timeout=.5 + (level * 0.1))
+        clear_memory_chunk(lp, pads)
+        if check_input(pads, lp, lives=lives, additional_pad=pressed_pad):
             level += 1
         else:
             lives -= 1
+            level -= 1
             if lives == 0:
                 print("Game Over")
-                level = 1
-                lives = 3
+                lp.fill_all(255, 0, 0)
+                time.sleep(2)
+                lp.clear()
+                break
+
+
+def main():
+    lp = LaunchpadMK2()
+    try:
+        while True:
+            wait_user(lp)
+            game_loop(lp)
+    except KeyboardInterrupt:
+        print("\n[Launchpad] Exiting...")
+        lp.clear()
 
 
 if __name__ == "__main__":
