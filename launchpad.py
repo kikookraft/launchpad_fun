@@ -10,7 +10,7 @@ Methods added:
 
 import rtmidi
 import time
-import sys
+
 
 class LaunchpadMK2:
     """Launchpad MK2 controller with full RGB SysEx support and event queue."""
@@ -84,6 +84,9 @@ class LaunchpadMK2:
 
     # ----- Coordinate mapping (9 rows, 9 columns; top row lacks x=8) -----
     def led_from_xy(self, x, y):
+        """
+        Convert (x, y) coordinates to LED index.
+        """
         if not (0 <= y <= 8):
             raise ValueError("y must be 0-8")
         if y == 0:
@@ -97,6 +100,9 @@ class LaunchpadMK2:
             return base + x
 
     def xy_from_led(self, led):
+        """
+        Convert LED index to (x, y) coordinates.
+        """
         if not (0 <= led < self.NUM_LEDS):
             raise ValueError(f"LED {led} out of range")
         if 104 <= led <= 111:
@@ -108,19 +114,34 @@ class LaunchpadMK2:
         raise ValueError(f"LED {led} is not a grid or top button")
 
     def set_xy(self, x, y, r, g, b):
+        """
+        Set the colour of a pad at (x, y) coordinates.
+        x: 0-8 (8 is rightmost column)
+        y: 0-8 (0 is top row of round buttons)
+        """
         led = self.led_from_xy(x, y)
         self.set_led(led, r, g, b)
 
     # ----- Convenience methods -----
     def set_grid(self, row, col, r, g, b):
+        """
+        Set the colour of a pad in the grid.
+        row: 0-7 (0 is top row)
+        col: 0-8 (0 is leftmost column)
+        """
         y = 8 - row
         x = col
         self.set_xy(x, y, r, g, b)
 
     def set_top_button(self, index, r, g, b):
+        """
+        Set the colour of a top round button.
+        index: 0-7 (0 is leftmost button)
+        """
         self.set_xy(index, 0, r, g, b)
 
     def clear(self):
+        """Clear all pads color on the Launchpad."""
         for led in range(self.NUM_LEDS):
             self.midi_out.send_message([0xF0, 0x00, 0x20, 0x29, 0x02, 0x18, 0x0B, led, 0, 0, 0, 0xF7])
         time.sleep(0.01)
@@ -163,6 +184,10 @@ class LaunchpadMK2:
 
     # ----- Event Queue -----
     def update(self):
+        """
+        Update the event queue with pending MIDI messages.
+        This method should be called frequently to ensure that button presses are captured.
+        """
         while True:
             msg = self.midi_in.get_message()
             if not msg:
@@ -189,6 +214,12 @@ class LaunchpadMK2:
         return len(self._event_queue) > 0
 
     def get_pressed(self):
+        """
+        Get the next pressed pad from the event queue.
+        Returns (x, y) coordinates if return_coords is True, otherwise returns the LED index.
+        Returns None if no events are in the queue.
+        """
+        
         if not self._event_queue:
             return None
         led = self._event_queue.pop(0)
@@ -201,38 +232,8 @@ class LaunchpadMK2:
             return led
 
     def clear_events(self):
+        """Clear the event queue."""
         self._event_queue.clear()
-
-    def run(self, callback, include_release=False):
-        try:
-            while True:
-                msg = self.midi_in.get_message()
-                if msg:
-                    data, _ = msg
-                    if not data:
-                        continue
-                    status = data[0] & 0xF0
-                    if status == 0x90:
-                        if len(data) >= 3:
-                            led = data[1]
-                            velocity = data[2]
-                            if led < self.NUM_LEDS:
-                                pressed = velocity > 0
-                                if pressed or include_release:
-                                    callback(led, pressed)
-                    elif status == 0xB0:
-                        if len(data) >= 3:
-                            controller = data[1]
-                            value = data[2]
-                            if 104 <= controller <= 111:
-                                pressed = value == 0x7F
-                                if pressed or include_release:
-                                    callback(controller, pressed)
-                time.sleep(0.001)
-        except KeyboardInterrupt:
-            print("\n[Launchpad] Exiting event loop...")
-            self.clear()
-            self.close()
 
 
 # ----- Demo (with fill methods) -----
