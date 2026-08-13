@@ -1,19 +1,11 @@
 #!/usr/bin/env python3
 """
-launchpad_mk2.py - Full RGB control for Novation Launchpad MK2 with event queue.
+launchpad_mk2.py - Full RGB control for Novation Launchpad MK2.
 
-Usage:
-    import launchpad_mk2
-    lp = launchpad_mk2.LaunchpadMK2()
-    lp.set_xy(0, 0, 255, 0, 0)   # top-left round button -> red
-
-    while True:
-        lp.update()              # fetch all pending events
-        if lp.pressed:
-            x, y = lp.get_pressed()   # returns next pressed coordinate (removes it)
-            lp.set_xy(x, y, 255, 255, 255)  # light it up
-            print(f"Pressed ({x},{y})")
-        # do other stuff...
+Methods added:
+    fill_all(r,g,b)      -> all 112 LEDs
+    fill_row(y, r,g,b)   -> row y (0=top, 8=bottom)
+    fill_col(x, r,g,b)   -> column x (0..8, but row0 lacks x=8)
 """
 
 import rtmidi
@@ -26,9 +18,6 @@ class LaunchpadMK2:
     NUM_LEDS = 112
 
     def __init__(self, input_port=None, output_port=None, auto_open=True, return_coords=True):
-        """
-        :param return_coords: if True, get_pressed() returns (x,y) tuple; else LED index.
-        """
         self.return_coords = return_coords
         self._event_queue = []
         self.midi_in = None
@@ -140,12 +129,40 @@ class LaunchpadMK2:
         self._send_programmer_mode()
         self.clear()
 
+    # ----- Fill methods (NEW) -----
+    def fill_all(self, r, g, b):
+        """Set all 112 LEDs to the same RGB colour."""
+        for led in range(self.NUM_LEDS):
+            self.set_led(led, r, g, b)
+
+    def fill_row(self, y, r, g, b):
+        """
+        Fill a whole row with one colour.
+        y: 0 = top round buttons, 1..8 = grid rows.
+        For y=0: fills x=0..7; for y>=1: fills x=0..8.
+        """
+        if y == 0:
+            for x in range(8):
+                self.set_xy(x, y, r, g, b)
+        else:
+            for x in range(9):
+                self.set_xy(x, y, r, g, b)
+
+    def fill_col(self, x, r, g, b):
+        """
+        Fill a whole column with one colour.
+        x: 0..7 -> fills y=0..8 (all rows)
+        x: 8 -> fills y=1..8 (grid only, since row 0 has no x=8)
+        """
+        if x == 8:
+            for y in range(1, 9):
+                self.set_xy(x, y, r, g, b)
+        else:
+            for y in range(9):
+                self.set_xy(x, y, r, g, b)
+
     # ----- Event Queue -----
     def update(self):
-        """
-        Poll the MIDI input for pending messages and add press events to the queue.
-        Call this regularly in your main loop.
-        """
         while True:
             msg = self.midi_in.get_message()
             if not msg:
@@ -158,7 +175,7 @@ class LaunchpadMK2:
                 if len(data) >= 3:
                     led = data[1]
                     velocity = data[2]
-                    if led < self.NUM_LEDS and velocity > 0:   # only on press
+                    if led < self.NUM_LEDS and velocity > 0:
                         self._event_queue.append(led)
             elif status == 0xB0:
                 if len(data) >= 3:
@@ -169,14 +186,9 @@ class LaunchpadMK2:
 
     @property
     def pressed(self):
-        """Return True if there are pending press events in the queue."""
         return len(self._event_queue) > 0
 
     def get_pressed(self):
-        """
-        Return the next pressed event (coordinate or LED) and remove it from the queue.
-        Returns None if the queue is empty.
-        """
         if not self._event_queue:
             return None
         led = self._event_queue.pop(0)
@@ -184,16 +196,13 @@ class LaunchpadMK2:
             try:
                 return self.xy_from_led(led)
             except ValueError:
-                # If the LED is not in the mapped range, return the LED index as fallback
                 return led
         else:
             return led
 
     def clear_events(self):
-        """Empty the event queue without reading them."""
         self._event_queue.clear()
 
-    # ----- Callback-based event loop (blocking) -----
     def run(self, callback, include_release=False):
         try:
             while True:
@@ -226,33 +235,40 @@ class LaunchpadMK2:
             self.close()
 
 
-# ----- Demo (non-blocking with event queue) -----
+# ----- Demo (with fill methods) -----
 if __name__ == "__main__":
-    print("Launchpad MK2 Demo with event queue")
-    print("Press any button; it will be queued and printed when you call get_pressed().")
-    print("Press Ctrl+C to exit.\n")
+    print("Launchpad MK2 Fill Demo")
+    print("Testing fill methods...")
 
-    lp = LaunchpadMK2(return_coords=True)
+    lp = LaunchpadMK2()
     lp.clear()
 
-    try:
-        while True:
-            lp.update()  # fetch all pending events
-            while lp.pressed:
-                event = lp.get_pressed()
-                if event is None:
-                    break
-                # event is (x, y) because return_coords=True
-                x, y = event
-                # Light up the pressed pad with a random colour
-                import random
-                r = random.randint(0, 255)
-                g = random.randint(0, 255)
-                b = random.randint(0, 255)
-                lp.set_xy(x, y, r, g, b)
-                print(f"Pressed ({x},{y}) -> RGB({r},{g},{b})")
-            time.sleep(0.01)  # small delay to avoid busy loop
-    except KeyboardInterrupt:
-        print("\nExiting...")
-        lp.clear()
-        lp.close()
+    # Fill all pads with a dim blue
+    print("Filling all pads with blue (0,0,50)")
+    lp.fill_all(0, 0, 50)
+    time.sleep(2)
+
+    # Fill row 0 (top buttons) with red
+    print("Filling top row with red")
+    lp.fill_row(0, 255, 0, 0)
+    time.sleep(1)
+
+    # Fill row 4 with green
+    print("Filling middle row (y=4) with green")
+    lp.fill_row(4, 0, 255, 0)
+    time.sleep(1)
+
+    # Fill column 4 with yellow
+    print("Filling middle column (x=4) with yellow")
+    lp.fill_col(4, 255, 255, 0)
+    time.sleep(1)
+
+    # Fill column 8 (rightmost) with magenta
+    print("Filling rightmost column (x=8) with magenta")
+    lp.fill_col(8, 255, 0, 255)
+    time.sleep(2)
+
+    # Clear all
+    lp.clear()
+    print("Done.")
+    lp.close()
