@@ -1,32 +1,36 @@
 #!/usr/bin/env python3
 """
-launchpad_mk2.py - Full RGB control for Novation Launchpad MK2.
-
-Coordinate system (for method set_xy and led_from_xy):
-- x: 0 = left, 8 = right (max 8, but row 0 lacks x=8)
-- y: 0 = top row (round buttons), 8 = bottom row (grid row 7)
-- Row 0: x=0..7 valid
-- Rows 1..8: x=0..8 valid
+launchpad_mk2.py - Full RGB control for Novation Launchpad MK2 with event queue.
 
 Usage:
     import launchpad_mk2
     lp = launchpad_mk2.LaunchpadMK2()
     lp.set_xy(0, 0, 255, 0, 0)   # top-left round button -> red
-    lp.set_xy(8, 8, 0, 255, 0)   # bottom-right pad -> green
-    lp.clear()
-    lp.close()
+
+    while True:
+        lp.update()              # fetch all pending events
+        if lp.pressed:
+            x, y = lp.get_pressed()   # returns next pressed coordinate (removes it)
+            lp.set_xy(x, y, 255, 255, 255)  # light it up
+            print(f"Pressed ({x},{y})")
+        # do other stuff...
 """
 
 import rtmidi
 import time
-
+import sys
 
 class LaunchpadMK2:
-    """Launchpad MK2 controller with full RGB SysEx support."""
+    """Launchpad MK2 controller with full RGB SysEx support and event queue."""
 
     NUM_LEDS = 112
 
-    def __init__(self, input_port=None, output_port=None, auto_open=True):
+    def __init__(self, input_port=None, output_port=None, auto_open=True, return_coords=True):
+        """
+        :param return_coords: if True, get_pressed() returns (x,y) tuple; else LED index.
+        """
+        self.return_coords = return_coords
+        self._event_queue = []
         self.midi_in = None
         self.midi_out = None
         self.input_port_index = None
@@ -34,9 +38,7 @@ class LaunchpadMK2:
         if auto_open:
             self.open(input_port, output_port)
 
-    def open(self,
-             input_port: int | None = None,
-             output_port: int | None = None):
+    def open(self, input_port=None, output_port=None):
         self.midi_in = rtmidi.MidiIn()
         self.midi_out = rtmidi.MidiOut()
         in_ports = self.midi_in.get_ports()
@@ -93,12 +95,6 @@ class LaunchpadMK2:
 
     # ----- Coordinate mapping (9 rows, 9 columns; top row lacks x=8) -----
     def led_from_xy(self, x, y):
-        """
-        Convert coordinate (x, y) to LED index.
-        - x: 0-8, y: 0-8
-        - If y==0, x must be 0-7 (no button at 8,0)
-        - Rows 1-8: x=0-8 valid
-        """
         if not (0 <= y <= 8):
             raise ValueError("y must be 0-8")
         if y == 0:
@@ -108,45 +104,31 @@ class LaunchpadMK2:
         else:
             if not (0 <= x <= 8):
                 raise ValueError("x must be 0-8 for rows 1-8")
-            base = 91 - 10 * y   # yields 81,71,61,51,41,31,21,11 for y=1..8
+            base = 91 - 10 * y
             return base + x
 
     def xy_from_led(self, led):
-        """
-        Convert LED index to (x, y) coordinate.
-        Returns (x, y) or raises ValueError if LED is not in the mapped range.
-        """
         if not (0 <= led < self.NUM_LEDS):
             raise ValueError(f"LED {led} out of range")
         if 104 <= led <= 111:
             return (led - 104, 0)
-        # Check rows 1-8: ranges 81-89, 71-79, ..., 11-19
         for y in range(1, 9):
             base = 91 - 10 * y
             if base <= led <= base + 8:
                 return (led - base, y)
-        raise ValueError(f"LED {led} is not a grid or top button (maybe side button?)")
+        raise ValueError(f"LED {led} is not a grid or top button")
 
     def set_xy(self, x, y, r, g, b):
-        """
-        Set a button by coordinate (x, y) to an RGB colour.
-        """
         led = self.led_from_xy(x, y)
         self.set_led(led, r, g, b)
 
     # ----- Convenience methods -----
     def set_grid(self, row, col, r, g, b):
-        """
-        Legacy: row 0-7 (bottom), col 0-7 (left). Internally uses xy mapping.
-        """
-        # Convert legacy row/col to our x,y: row 0 bottom -> y=8-row? Actually our y=0 top.
-        # We'll keep it simple: map row 0 to y=8, row 7 to y=1.
         y = 8 - row
-        x = col  # columns same
+        x = col
         self.set_xy(x, y, r, g, b)
 
     def set_top_button(self, index, r, g, b):
-        """Legacy: index 0-7 left to right."""
         self.set_xy(index, 0, r, g, b)
 
     def clear(self):
@@ -158,7 +140,60 @@ class LaunchpadMK2:
         self._send_programmer_mode()
         self.clear()
 
-    # ----- Event handling -----
+    # ----- Event Queue -----
+    def update(self):
+        """
+        Poll the MIDI input for pending messages and add press events to the queue.
+        Call this regularly in your main loop.
+        """
+        while True:
+            msg = self.midi_in.get_message()
+            if not msg:
+                break
+            data, _ = msg
+            if not data:
+                continue
+            status = data[0] & 0xF0
+            if status == 0x90:
+                if len(data) >= 3:
+                    led = data[1]
+                    velocity = data[2]
+                    if led < self.NUM_LEDS and velocity > 0:   # only on press
+                        self._event_queue.append(led)
+            elif status == 0xB0:
+                if len(data) >= 3:
+                    controller = data[1]
+                    value = data[2]
+                    if 104 <= controller <= 111 and value == 0x7F:
+                        self._event_queue.append(controller)
+
+    @property
+    def pressed(self):
+        """Return True if there are pending press events in the queue."""
+        return len(self._event_queue) > 0
+
+    def get_pressed(self):
+        """
+        Return the next pressed event (coordinate or LED) and remove it from the queue.
+        Returns None if the queue is empty.
+        """
+        if not self._event_queue:
+            return None
+        led = self._event_queue.pop(0)
+        if self.return_coords:
+            try:
+                return self.xy_from_led(led)
+            except ValueError:
+                # If the LED is not in the mapped range, return the LED index as fallback
+                return led
+        else:
+            return led
+
+    def clear_events(self):
+        """Empty the event queue without reading them."""
+        self._event_queue.clear()
+
+    # ----- Callback-based event loop (blocking) -----
     def run(self, callback, include_release=False):
         try:
             while True:
@@ -170,12 +205,12 @@ class LaunchpadMK2:
                     status = data[0] & 0xF0
                     if status == 0x90:
                         if len(data) >= 3:
-                            note = data[1]
+                            led = data[1]
                             velocity = data[2]
-                            if note < self.NUM_LEDS:
+                            if led < self.NUM_LEDS:
                                 pressed = velocity > 0
                                 if pressed or include_release:
-                                    callback(note, pressed)
+                                    callback(led, pressed)
                     elif status == 0xB0:
                         if len(data) >= 3:
                             controller = data[1]
@@ -190,51 +225,34 @@ class LaunchpadMK2:
             self.clear()
             self.close()
 
-    def poll(self):
-        msg = self.midi_in.get_message()
-        if not msg:
-            return None
-        data, _ = msg
-        if not data:
-            return None
-        status = data[0] & 0xF0
-        if status == 0x90:
-            if len(data) >= 3:
-                note = data[1]
-                velocity = data[2]
-                if note < self.NUM_LEDS:
-                    return note, velocity > 0
-        elif status == 0xB0:
-            if len(data) >= 3:
-                controller = data[1]
-                value = data[2]
-                if 104 <= controller <= 111:
-                    return controller, value == 0x7F
-        return None
 
-
-# ----- Demo -----
+# ----- Demo (non-blocking with event queue) -----
 if __name__ == "__main__":
-    print("Launchpad MK2 Demo with coordinate mapping")
-    print("Press any button; it will light up with a random colour.")
-    print("Coordinates will be printed.")
+    print("Launchpad MK2 Demo with event queue")
+    print("Press any button; it will be queued and printed when you call get_pressed().")
     print("Press Ctrl+C to exit.\n")
 
-    lp = LaunchpadMK2()
+    lp = LaunchpadMK2(return_coords=True)
     lp.clear()
 
-    def on_press(led, pressed):
-        if pressed:
-            try:
-                x, y = lp.xy_from_led(led)
-            except ValueError:
-                print(f"LED {led} not in mapped range, skipping")
-                return
-            import random
-            r = random.randint(0, 255)
-            g = random.randint(0, 255)
-            b = random.randint(0, 255)
-            lp.set_led(led, r, g, b)
-            print(f"LED {led} -> coord ({x},{y})  RGB({r},{g},{b})")
-
-    lp.run(on_press)
+    try:
+        while True:
+            lp.update()  # fetch all pending events
+            while lp.pressed:
+                event = lp.get_pressed()
+                if event is None:
+                    break
+                # event is (x, y) because return_coords=True
+                x, y = event
+                # Light up the pressed pad with a random colour
+                import random
+                r = random.randint(0, 255)
+                g = random.randint(0, 255)
+                b = random.randint(0, 255)
+                lp.set_xy(x, y, r, g, b)
+                print(f"Pressed ({x},{y}) -> RGB({r},{g},{b})")
+            time.sleep(0.01)  # small delay to avoid busy loop
+    except KeyboardInterrupt:
+        print("\nExiting...")
+        lp.clear()
+        lp.close()
