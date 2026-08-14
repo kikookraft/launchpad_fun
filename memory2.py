@@ -169,6 +169,7 @@ class MemoryGame:
     def __init__(self, lp: LaunchpadMK2, lives: int = 3, difficulty: int = 1):
         self.lp: LaunchpadMK2 = lp
         self.lives = lives
+        self.starting_lives = lives
         self.level = 1
         self.pads = MemoryPads(difficulty=difficulty)
 
@@ -180,7 +181,7 @@ class MemoryGame:
             else:
                 self.lp.set_top_button(i, 255, 0, 0)    # Red for lost lives
 
-    def wait_user(self, timeout: float = 0):
+    def wait_user(self, timeout: float = 0, lit = False) -> tuple[int, int] | None:
         """
         Wait for the user to press any pad and return the coordinates of the pad pressed
         """
@@ -193,7 +194,7 @@ class MemoryGame:
         while True:
             self.lp.update()  # fetch all pending events
             event = self.lp.get_pressed()
-            if time.time() - last_update > 0.1 and not timeout:
+            if time.time() - last_update > 0.1 and not timeout and lit:
                 status = not status
                 last_update = time.time()
                 if status:
@@ -202,7 +203,9 @@ class MemoryGame:
                     self.lp.set_xy(8, 8, 0, 0, 0)
             if event is not None or (timeout and time.time() - last_update > timeout):
                 break
-        self.lp.set_xy(8, 8, 0, 0, 0)
+        if not lit:
+            self.lp.set_xy(8, 8, 0, 0, 0)
+        return event
 
     def lit_pads(self, pads: list[tuple[int, int]], color: tuple[int, int, int]):
         """Light up the specified pads with the given color."""
@@ -264,6 +267,8 @@ class MemoryGame:
         """Read the user's pads and compare them to the sequence, in order.
 
         Returns True only if the full sequence was reproduced correctly.
+        Presses that land while a pad is flashing are kept for the next step,
+        so a fast player can speedrun the sequence.
         """
         self.lp.update()
         self.lp.clear_events()
@@ -276,27 +281,57 @@ class MemoryGame:
                 pad_group = self.convert_pad_coord((event[0], event[1]))
                 if pad_group is not None:
                     if pad_group == self.pads.pad_list[index]["pads"]:
-                        self.lit_pads(pad_group, (0, 255, 0))  # correct group in green
+                        # Flash green; stop early if the next pad is pressed.
+                        self.lit_pads(pad_group, (0, 255, 0))
+                        self.wait_flash(0.3)
+                        self.lit_pads(pad_group, (0, 0, 0))
                         index += 1
                     else:
-                        self.lit_pads(pad_group, (255, 0, 0))  # wrong group in red
+                        # Flash red, then clear before replaying the sequence.
+                        self.lit_pads(pad_group, (255, 0, 0))
+                        time.sleep(0.3)
+                        self.lit_pads(pad_group, (0, 0, 0))
                         return False
             if timeout and time.time() - start_time > timeout:
                 return False
             time.sleep(0.05)
         return True
 
+    def wait_flash(self, duration: float = 0.3):
+        """Wait up to `duration` seconds, returning early if a pad is pressed.
+
+        The press is left in the event queue so check_input can read it.
+        """
+        deadline = time.time() + duration
+        while time.time() < deadline:
+            self.lp.update()
+            if self.lp.pressed:
+                return
+            time.sleep(0.01)
 
     def game_loop(self):
         """Main game loop for the memory game."""
         self.lp.clear()
+        # Reset state for a fresh game.
+        self.lives = self.starting_lives
+        self.level = 1
+        self.pads.pad_list = []
         self.show_lives()
         while self.lives > 0:
-            self.pads.add_random_pad()
-            self.play_sequence(interval=(0.5 / self.pads.difficulty) * (1/self.level * 1.5))
-            if not self.check_input(timeout=5.0):  # Check input with a 5-second timeout
-                self.lives -= 1
-            self.show_lives()
+            self.pads.add_random_pad()  # extend the sequence only on a new round
+            correct = False
+            while not correct and self.lives > 0:
+                # Replay the whole sequence each attempt.
+                interval = 1.5 * (5 / (self.level * 8)) + 0.2
+                self.play_sequence(interval=interval)
+                if self.check_input(timeout=5.0+(self.level * 0.5)):
+                    correct = True
+                    self.level += 1
+                    print(f"Level {self.level} reached!")
+                else:
+                    self.lives -= 1
+                    self.show_lives()
+        print(f"Game over! Level {self.level}, Score: {self.level * self.pads.difficulty * 10}")
 
 
 if __name__ == "__main__":
