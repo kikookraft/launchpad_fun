@@ -20,9 +20,9 @@ def generate_memory_chunk(
 
 
 def display_memory_chunk(lp: LaunchpadMK2,
-                         pads: list[tuple[int, int]],
-                         color: tuple[int, int, int] = (255, 255, 255),
-                         lives: int = 3):
+                        pads: list[tuple[int, int]],
+                        color: tuple[int, int, int] = (255, 255, 255),
+                        lives: int = 3):
     """
     Display the memory chunk on the Launchpad
     Pads is a list of tuples (x, y) where x and y are
@@ -34,7 +34,7 @@ def display_memory_chunk(lp: LaunchpadMK2,
 
 
 def clear_memory_chunk(lp: LaunchpadMK2,
-                       pads: list[tuple[int, int]]):
+                    pads: list[tuple[int, int]]):
     """
     Clear the memory chunk on the Launchpad
     Pads is a list of tuples (x, y) where x and y are
@@ -172,27 +172,46 @@ def wait_user(lp: LaunchpadMK2, timeout: float = 0):
     return event
 
 
-def game_loop(lp: LaunchpadMK2):
+def game_loop(lp: LaunchpadMK2) -> int:
     lp.clear()
     level = 1
     lives = 8
     show_lives(lp, lives)
+    stats = {}
     while True:
         pads = generate_memory_chunk(level)
         display_memory_chunk(lp, pads, lives=lives)
         pressed_pad = wait_user(lp, timeout=.5 + (level * 0.1))
         clear_memory_chunk(lp, pads)
+        press_time = time.time()
         if check_input(pads, lp, lives=lives, additional_pad=pressed_pad):
+            print(f"Level {level} completed in {round((time.time() - press_time) * 1000)} ms")
+            stats[f"Level {level}"] = {"status": "completed", "time": time.time() - press_time}
             level += 1
         else:
+            print(f"Level {level} failed in {round((time.time() - press_time) * 1000)} ms")
+            stats["failed"] = {"status": "failed", "time": time.time() - press_time}
+            if level >= 2:
+                level -= 1
             lives -= 1
-            level -= 1
             if lives == 0:
                 print("Game Over")
                 lp.fill_all(255, 0, 0)
-                time.sleep(2)
-                lp.clear()
+                # time.sleep(.1)
+                lp.fill_all(0, 0, 0)
                 break
+    # Only count successful levels, and weight them by level
+    successful = [stat for stat in stats.values() if stat['status'] == 'completed']
+    if successful:
+        weighted_sum = sum(level * (1 / stat['time']) for level, stat in enumerate(successful, start=1))
+        score = weighted_sum * 1000
+    else:
+        score = 0
+
+    # Penalise failures: each failure subtracts a fixed amount (e.g., 50)
+    score = max(0, round(score/10, 0))
+    print(f"Final Score: {score}")
+    return score
 
 
 def main():
