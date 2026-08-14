@@ -283,13 +283,14 @@ class MemoryGame:
                     if pad_group == self.pads.pad_list[index]["pads"]:
                         # Flash green; stop early if the next pad is pressed.
                         self.lit_pads(pad_group, (0, 255, 0))
+                        self.lp.clear_events()
                         self.wait_flash(0.3)
                         self.lit_pads(pad_group, (0, 0, 0))
                         index += 1
                     else:
                         # Flash red, then clear before replaying the sequence.
                         self.lit_pads(pad_group, (255, 0, 0))
-                        time.sleep(0.3)
+                        time.sleep(0.75)
                         self.lit_pads(pad_group, (0, 0, 0))
                         return False
             if timeout and time.time() - start_time > timeout:
@@ -307,7 +308,7 @@ class MemoryGame:
             self.lp.update()
             if self.lp.pressed:
                 return
-            time.sleep(0.01)
+            time.sleep(0.05)
 
     def game_loop(self):
         """Main game loop for the memory game."""
@@ -331,7 +332,7 @@ class MemoryGame:
                 else:
                     self.lives -= 1
                     self.show_lives()
-        print(f"Game over! Level {self.level}, Score: {self.level * self.pads.difficulty * 10}")
+        print(f"Game over! Level {self.level}, Score: {(self.pads.difficulty+1) ** (self.level)}")
 
 
 if __name__ == "__main__":
